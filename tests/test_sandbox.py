@@ -12,3 +12,13 @@ def test_executes_simple_expression_and_captures_stdout():
     assert "hello" in result.stdout
     assert result.exception is None
     assert result.timed_out is False
+
+
+def test_captures_exception_traceback():
+    sb = Sandbox()
+    try:
+        result = sb.execute("1/0")
+    finally:
+        sb.close()
+    assert result.exception is not None
+    assert "ZeroDivisionError" in result.exception
