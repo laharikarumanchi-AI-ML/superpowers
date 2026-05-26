@@ -871,33 +871,46 @@ git commit -m "feat(orchestrator): parse <code>/<answer> blocks from LLM output"
 **Files:**
 - Create: `prompts/system.txt`
 
+Per Phase 0 findings, DABench's official scorer (`evaluate_responses` in `eval_closed_form.py`) extracts answers from the agent's response using the regex `@(\w+)\[(.*?)\]`. Tasks come with explicit `constraints` (natural-language) and `format` (the `@name[value]` template). The system prompt must:
+
+1. Template `{constraints}` and `{format_constraint}` into the body.
+2. Tell the model to emit final values as `@name[value]` tags inside `<answer>...</answer>`.
+
+For CLI/ad-hoc use (no DABench task), the constraint sections can be empty strings — the model can still answer freely.
+
 - [ ] **Step 1: Write the prompt**
 
 `prompts/system.txt`:
 ```
 You are a data analysis agent. You answer the user's question about a dataset by writing and executing Python code in a sandboxed Jupyter kernel.
 
-The dataset has been loaded at the path: {dataset_path}
-Preview of the dataset:
+The dataset is at: {dataset_path}
+Preview:
 {dataset_preview}
 
-Rules:
-1. Each response must contain EXACTLY ONE of:
-   - A Python code block wrapped in <code>...</code> to execute next.
-   - A final answer wrapped in <answer>...</answer> when you have enough information.
-2. Code blocks are executed in a persistent Jupyter kernel; variables defined in one block are available in the next.
-3. pandas, numpy, and matplotlib are available. matplotlib uses the 'Agg' backend (figures are captured automatically).
-4. Keep code blocks small and focused — one logical step per block.
-5. If a code block raises an exception, you will see the traceback; fix the code and retry.
-6. The dataset is already at {dataset_path}; do not re-download or relocate it.
-7. When you have the answer, emit it in <answer>...</answer> and stop.
+Each response must contain EXACTLY ONE of:
+- A Python code block wrapped in <code>...</code> to execute next.
+- A final answer wrapped in <answer>...</answer> when you have enough information.
+
+Execution rules:
+- Code blocks run in a persistent Jupyter kernel; variables persist across blocks.
+- pandas, numpy, and matplotlib are available. matplotlib uses the 'Agg' backend.
+- Keep code blocks small and focused — one logical step per block.
+- If a code block raises, you will see the traceback; fix and retry.
+- The dataset is already at {dataset_path}; do not re-download or relocate it.
+
+Answer rules:
+- The question's constraints: {constraints}
+- The required answer format: {format_constraint}
+
+When emitting the final <answer>, include each required value as an "@name[value]" tag, exactly matching the names and types in the format constraint above. Example: <answer>@mean[42.50] @median[40.0]</answer>. If no format constraint was provided, write your answer as a brief natural-language sentence.
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add prompts/system.txt
-git commit -m "feat(prompts): system prompt for the code-as-action agent"
+git commit -m "feat(prompts): system prompt with @name[value] answer format"
 ```
 
 ## Task 12: Orchestrator main loop (with mocked LLM end-to-end test)
@@ -934,6 +947,7 @@ def test_agent_answers_simple_question(tmp_path: Path):
         "<code>import pandas as pd\ndf = pd.read_csv(r'" + str(csv) + "')\nprint(df['x'].mean())</code>",
         "<answer>The mean of x is 2.5.</answer>",
     ])
+    # No constraints/format_constraint: CLI-style ad-hoc use.
     result = run(question="What is the mean of x?", dataset_path=str(csv), llm=llm)
     assert isinstance(result, AgentResult)
     assert result.success
@@ -995,11 +1009,16 @@ def _format_observation(result: ExecutionResult) -> str:
 
 def run(question: str, dataset_path: str, llm, *,
         retry_on_failure: bool = True,
-        llm_kwargs: dict | None = None) -> AgentResult:
+        llm_kwargs: dict | None = None,
+        constraints: str = "",
+        format_constraint: str = "") -> AgentResult:
     """Run the agent loop against a dataset until <answer> or max steps.
 
     llm_kwargs is passed through to llm.chat() — eval runs should pass
     {"temperature": 0} for reproducibility.
+
+    constraints + format_constraint come from a DABench task; empty
+    strings are correct for ad-hoc CLI use.
     """
     session_id = str(uuid.uuid4())[:8]
     trace = Trace(session_id=session_id)
@@ -1009,6 +1028,8 @@ def run(question: str, dataset_path: str, llm, *,
     system_prompt = PROMPT_PATH.read_text().format(
         dataset_path=dataset_path,
         dataset_preview=_dataset_preview(dataset_path),
+        constraints=constraints or "(none)",
+        format_constraint=format_constraint or "(none — answer in plain language)",
     )
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
@@ -1415,20 +1436,52 @@ git commit -m "feat(demo): Hugging Face Spaces deploy config"
 
 # Phase 8 — Eval Harness (subset run for MVP gate)
 
-## Task 16: DABench loader
+## Task 16: DABench loader, scorer integration, runner
+
+**Phase 0 findings that drive this task** (see `external/PATHS.md`):
+
+- Tasks live in `da-dev-questions.jsonl`; answers in a SEPARATE `da-dev-labels.jsonl`. Join on `id`.
+- Field name for the CSV is `file_name` (not `data_file`).
+- Answer field on a label is `common_answers`: a `list[[name, value]]`.
+- Constraint fields on a task: `constraints` (natural-language) and `format` (the `@name[value]` template). Both must be passed into the prompt.
+- Total: 257 tasks. Headline metric: **ABQ** (Accuracy By Question — all sub-answers must match).
+- Scorer: copy `external/InfiAgent/examples/DA-Agent/eval_closed_form.py` and `external/InfiAgent/examples/DA-Agent/utils/utils.py` into `agent/eval/scorers/infiagent/` (Path A2). Both are stdlib-only.
 
 **Files:**
+- Create: `agent/eval/scorers/__init__.py`
+- Create: `agent/eval/scorers/infiagent/__init__.py`
+- Create: `agent/eval/scorers/infiagent/eval_closed_form.py` (copied)
+- Create: `agent/eval/scorers/infiagent/utils.py` (copied)
 - Create: `agent/eval/run_dabench.py`
 
-- [ ] **Step 1: Inspect the InfiAgent-DABench data format**
+- [ ] **Step 1: Copy the official scorer (with attribution)**
 
-DABench is published at https://github.com/InfiAgent/InfiAgent. Tasks come as JSON with fields including `id`, `question`, `concepts`, `constraints`, `format`, `data_file` (CSV in their repo), and `expected_answer` (or similar — verify by reading 2-3 task entries).
+```bash
+mkdir -p agent/eval/scorers/infiagent
+touch agent/eval/scorers/__init__.py
+touch agent/eval/scorers/infiagent/__init__.py
+cp external/InfiAgent/examples/DA-Agent/eval_closed_form.py agent/eval/scorers/infiagent/eval_closed_form.py
+cp external/InfiAgent/examples/DA-Agent/utils/utils.py agent/eval/scorers/infiagent/utils.py
+```
 
-Open one of their task files to confirm the schema before writing the loader. If the schema differs from this plan, adapt accordingly.
+Prepend an attribution header to both files:
+```python
+# Copied from https://github.com/InfiAgent/InfiAgent
+# (examples/DA-Agent/eval_closed_form.py and utils/utils.py)
+# Used under the InfiAgent repo's license. Unmodified except for this header
+# and any minimal import-path adjustments (e.g. `from .utils import ...`).
+```
 
-- [ ] **Step 2: Write the loader and runner**
+Adjust the import inside `eval_closed_form.py` so that `from utils.utils import read_jsonl` becomes `from .utils import read_jsonl`. Confirm no other imports break — both files should be stdlib-only.
 
-`agent/eval/run_dabench.py`:
+Run a smoke check to verify the import works:
+```bash
+python3.11 -c "from agent.eval.scorers.infiagent.eval_closed_form import evaluate_responses; print('OK')"
+```
+Expected: `OK`.
+
+- [ ] **Step 2: Write `agent/eval/run_dabench.py`**
+
 ```python
 import argparse
 import json
@@ -1439,39 +1492,56 @@ from pathlib import Path
 
 from agent.orchestrator import run
 from agent.llm_client import GroqClient
+from agent.eval.scorers.infiagent.eval_closed_form import evaluate_responses
 
 
-def load_tasks(tasks_jsonl: Path, data_dir: Path, subset: int | None) -> list[dict]:
-    tasks = []
-    for line in tasks_jsonl.read_text().splitlines():
+def load_tasks(questions_jsonl: Path, labels_jsonl: Path,
+               data_dir: Path, subset: int | None) -> list[dict]:
+    """Load DABench tasks, joining questions + labels on `id`."""
+    labels_by_id: dict[int, dict] = {}
+    for line in labels_jsonl.read_text().splitlines():
         if not line.strip():
             continue
-        t = json.loads(line)
-        t["_data_path"] = str(data_dir / t["data_file"])
-        tasks.append(t)
+        lab = json.loads(line)
+        labels_by_id[lab["id"]] = lab
+
+    tasks: list[dict] = []
+    for line in questions_jsonl.read_text().splitlines():
+        if not line.strip():
+            continue
+        q = json.loads(line)
+        lab = labels_by_id.get(q["id"])
+        if lab is None:
+            continue  # unanswered task — skip
+        tasks.append({
+            **q,
+            "_data_path": str(data_dir / q["file_name"]),
+            "common_answers": lab["common_answers"],
+        })
     if subset is not None:
         tasks = tasks[:subset]
     return tasks
 
 
-def score(predicted: str, expected: str) -> bool:
-    """Lightweight string-match scorer. Replace with DABench's official metric
-    once you've confirmed its scoring spec — DABench evaluates structured
-    answers (e.g., specific numbers, lists) and the official scorer is more
-    forgiving than literal equality."""
-    if predicted is None or expected is None:
-        return False
-    return expected.strip().lower() in predicted.strip().lower()
+def _make_client(provider: str, model: str | None):
+    if provider == "groq":
+        return GroqClient(api_key=os.environ["GROQ_API_KEY"],
+                          model=model or "llama-3.3-70b-versatile")
+    if provider == "gemini":
+        from agent.llm_client import GeminiClient
+        return GeminiClient(api_key=os.environ["GEMINI_API_KEY"],
+                            model=model or "gemini-2.0-flash")
+    raise ValueError(f"unknown provider: {provider}")
 
 
-def run_eval(tasks_jsonl: Path, data_dir: Path, results_path: Path,
-             subset: int | None, model: str, retry: bool) -> None:
-    api_key = os.environ["GROQ_API_KEY"]
-    llm = GroqClient(api_key=api_key, model=model)
-    tasks = load_tasks(tasks_jsonl, data_dir, subset)
+def run_eval(questions_jsonl: Path, labels_jsonl: Path, data_dir: Path,
+             results_path: Path, subset: int | None, model: str | None,
+             retry: bool, provider: str = "groq") -> None:
+    llm = _make_client(provider, model)
+    tasks = load_tasks(questions_jsonl, labels_jsonl, data_dir, subset)
 
     # Resume support
-    done_ids: set[str] = set()
+    done_ids: set[int] = set()
     results: list[dict] = []
     if results_path.exists():
         existing = json.loads(results_path.read_text())
@@ -1483,68 +1553,105 @@ def run_eval(tasks_jsonl: Path, data_dir: Path, results_path: Path,
             continue
         t0 = time.time()
         try:
-            agent_result = run(task["question"], task["_data_path"], llm,
-                               retry_on_failure=retry,
-                               llm_kwargs={"temperature": 0})
+            agent_result = run(
+                task["question"], task["_data_path"], llm,
+                retry_on_failure=retry,
+                llm_kwargs={"temperature": 0},
+                constraints=task.get("constraints", ""),
+                format_constraint=task.get("format", ""),
+            )
             results.append({
                 "task_id": task["id"],
-                "predicted": agent_result.answer,
-                "expected": task.get("expected_answer", ""),
-                "correct": score(agent_result.answer, task.get("expected_answer", "")),
+                "predicted_response": agent_result.answer or "",
+                "common_answers": task["common_answers"],
                 "steps": agent_result.steps_taken,
                 "success": agent_result.success,
                 "failure_reason": agent_result.failure_reason,
                 "wall_seconds": round(time.time() - t0, 2),
-                "model": model,
+                "model": model or "default",
+                "provider": provider,
                 "retry": retry,
             })
         except Exception as exc:
             results.append({"task_id": task["id"], "error": str(exc),
-                            "model": model, "retry": retry})
+                            "provider": provider, "retry": retry})
 
-        # Checkpoint after every task — required by spec §8 rate-limit fallback
+        # Checkpoint after every task
         results_path.write_text(json.dumps({
             "run_id": results_path.stem,
             "results": results,
         }, indent=2))
-        print(f"[{i+1}/{len(tasks)}] {task['id']}: "
-              f"{results[-1].get('correct', 'ERR')}")
+        print(f"[{i+1}/{len(tasks)}] task {task['id']}: done")
+
+
+def score_run(results_path: Path) -> dict:
+    """Apply the official scorer to a completed run. Returns metric dict."""
+    data = json.loads(results_path.read_text())
+    # Build the inputs the official scorer expects.
+    labels = [{"id": r["task_id"], "common_answers": r["common_answers"]}
+              for r in data["results"] if "common_answers" in r]
+    responses = [{"id": r["task_id"], "response": r["predicted_response"]}
+                 for r in data["results"] if "predicted_response" in r]
+    scored = evaluate_responses(labels, responses)
+    # evaluate_responses returns per-task scores; aggregate to ABQ/PSAQ/UASQ
+    # using whatever helper the upstream file exposes (verify by reading it).
+    # If no aggregation helper exists, compute ABQ as:
+    #   correct_tasks = sum(1 for s in scored if all sub-answers correct)
+    #   ABQ = correct_tasks / len(scored)
+    n = len(scored)
+    abq_correct = sum(1 for s in scored if s.get("all_correct", False))
+    return {"ABQ": abq_correct / n if n else 0.0,
+            "n_tasks": n, "abq_correct": abq_correct}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tasks", required=True, type=Path,
-                        help="path to DABench tasks .jsonl")
+    parser.add_argument("--questions", required=True, type=Path,
+                        help="path to DABench da-dev-questions.jsonl")
+    parser.add_argument("--labels", required=True, type=Path,
+                        help="path to DABench da-dev-labels.jsonl")
     parser.add_argument("--data-dir", required=True, type=Path,
-                        help="dir of CSVs referenced by tasks")
+                        help="dir of CSVs (da-dev-tables/)")
     parser.add_argument("--subset", type=int, default=None)
-    parser.add_argument("--model", default="llama-3.3-70b-versatile")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--provider", choices=["groq", "gemini"], default="groq")
     parser.add_argument("--no-retry", action="store_true")
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--score-only", action="store_true",
+                        help="skip the run; just score the existing results file")
     args = parser.parse_args()
 
     run_id = args.run_id or f"run-{uuid.uuid4().hex[:8]}"
     results_path = Path(__file__).parent / "results" / f"{run_id}.json"
     results_path.parent.mkdir(parents=True, exist_ok=True)
 
-    run_eval(args.tasks, args.data_dir, results_path,
-             subset=args.subset, model=args.model, retry=not args.no_retry)
+    if not args.score_only:
+        run_eval(args.questions, args.labels, args.data_dir, results_path,
+                 subset=args.subset, model=args.model,
+                 retry=not args.no_retry, provider=args.provider)
+
+    metrics = score_run(results_path)
+    print(json.dumps(metrics, indent=2))
 
 
 if __name__ == "__main__":
     main()
 ```
 
+> **Implementation note for the agent:** the exact field names returned by `evaluate_responses` (e.g., `all_correct`) need to be verified against the actual scorer source — read `agent/eval/scorers/infiagent/eval_closed_form.py` and adjust `score_run` if the return shape differs. The upstream scorer's primary loop computes per-sub-answer correctness; you may need to call a helper from the same file to get ABQ aggregation, or write the aggregation locally as shown.
+
 - [ ] **Step 3: Verify it runs against a 5-task slice**
 
-Run:
+Use the paths recorded in `external/PATHS.md`:
 ```bash
+source external/PATHS.md   # or copy/paste the values
 python -m agent.eval.run_dabench \
-  --tasks path/to/dabench/tasks.jsonl \
-  --data-dir path/to/dabench/data \
+  --questions "$TASKS_JSONL" \
+  --labels "$LABELS_JSONL" \
+  --data-dir "$DATA_DIR" \
   --subset 5 --run-id smoke-test
 ```
-Expected: prints task-by-task results; `agent/eval/results/smoke-test.json` exists.
+Expected: prints task-by-task progress; `agent/eval/results/smoke-test.json` exists; the final JSON metrics dict prints ABQ.
 
 - [ ] **Step 4: Commit**
 
@@ -1553,9 +1660,9 @@ git add agent/eval/run_dabench.py
 git commit -m "feat(eval): DABench runner with checkpoint/resume"
 ```
 
-## Task 16b: Unit-test the eval scorer and loader
+## Task 16b: Unit-test the eval loader and scorer integration
 
-The scorer is the function that determines the resume number — it must be tested in isolation. The reviewer flagged this as the single biggest correctness risk.
+The scorer determines the resume number — it must be tested in isolation. Per Phase 0, the loader joins two JSONL files and the scorer is the official `evaluate_responses` (Path A2).
 
 **Files:**
 - Create: `tests/test_eval.py`
@@ -1565,77 +1672,122 @@ The scorer is the function that determines the resume number — it must be test
 ```python
 import json
 from pathlib import Path
-from agent.eval.run_dabench import score, load_tasks
+from agent.eval.run_dabench import load_tasks, score_run
 
 
-def test_score_substring_match():
-    assert score("the answer is 42", "42") is True
-    assert score("forty-two", "42") is False
-
-
-def test_score_none_safe():
-    assert score(None, "x") is False
-    assert score("x", None) is False
-
-
-def test_load_tasks_with_subset(tmp_path: Path):
-    tasks_file = tmp_path / "t.jsonl"
+def test_load_tasks_joins_questions_and_labels(tmp_path: Path):
+    questions = tmp_path / "q.jsonl"
+    labels = tmp_path / "l.jsonl"
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    tasks_file.write_text("\n".join([
-        json.dumps({"id": "t1", "question": "?", "data_file": "a.csv",
-                    "expected_answer": "1"}),
-        json.dumps({"id": "t2", "question": "?", "data_file": "b.csv",
-                    "expected_answer": "2"}),
-        json.dumps({"id": "t3", "question": "?", "data_file": "c.csv",
-                    "expected_answer": "3"}),
+    questions.write_text("\n".join([
+        json.dumps({"id": 1, "question": "Q1?", "file_name": "a.csv",
+                    "constraints": "c1", "format": "@x[float]"}),
+        json.dumps({"id": 2, "question": "Q2?", "file_name": "b.csv",
+                    "constraints": "c2", "format": "@y[int]"}),
     ]))
-    tasks = load_tasks(tasks_file, data_dir, subset=2)
+    labels.write_text("\n".join([
+        json.dumps({"id": 1, "common_answers": [["x", "1.5"]]}),
+        json.dumps({"id": 2, "common_answers": [["y", "42"]]}),
+    ]))
+    tasks = load_tasks(questions, labels, data_dir, subset=None)
     assert len(tasks) == 2
+    assert tasks[0]["question"] == "Q1?"
     assert tasks[0]["_data_path"].endswith("a.csv")
+    assert tasks[0]["common_answers"] == [["x", "1.5"]]
+    assert tasks[0]["constraints"] == "c1"
+    assert tasks[0]["format"] == "@x[float]"
+
+
+def test_load_tasks_subset(tmp_path: Path):
+    questions = tmp_path / "q.jsonl"
+    labels = tmp_path / "l.jsonl"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    questions.write_text("\n".join(
+        json.dumps({"id": i, "question": "?", "file_name": "x.csv",
+                    "constraints": "", "format": ""}) for i in range(5)
+    ))
+    labels.write_text("\n".join(
+        json.dumps({"id": i, "common_answers": [["x", "0"]]}) for i in range(5)
+    ))
+    tasks = load_tasks(questions, labels, data_dir, subset=3)
+    assert len(tasks) == 3
+
+
+def test_load_tasks_skips_unanswered(tmp_path: Path):
+    questions = tmp_path / "q.jsonl"
+    labels = tmp_path / "l.jsonl"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    questions.write_text("\n".join([
+        json.dumps({"id": 1, "question": "?", "file_name": "a.csv",
+                    "constraints": "", "format": ""}),
+        json.dumps({"id": 2, "question": "?", "file_name": "b.csv",
+                    "constraints": "", "format": ""}),
+    ]))
+    labels.write_text(json.dumps({"id": 1, "common_answers": [["x", "1"]]}))
+    tasks = load_tasks(questions, labels, data_dir, subset=None)
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == 1
+
+
+def test_score_run_smoke(tmp_path: Path):
+    """End-to-end: a results file with a known good answer scores 1.0 ABQ."""
+    results_path = tmp_path / "r.json"
+    results_path.write_text(json.dumps({
+        "run_id": "test",
+        "results": [{
+            "task_id": 1,
+            "predicted_response": "<answer>@mean[1.5]</answer>",
+            "common_answers": [["mean", "1.5"]],
+        }],
+    }))
+    metrics = score_run(results_path)
+    assert metrics["n_tasks"] == 1
+    assert metrics["ABQ"] == 1.0
 ```
 
-- [ ] **Step 2: Run; verify PASS** (and FAIL for the substring case if you've already swapped in the official scorer — that is expected; adjust the test to match whichever scorer you adopted in Phase 0c).
+- [ ] **Step 2: Run; verify PASS**
 
 Run: `pytest tests/test_eval.py -v`
+
+Note: `test_score_run_smoke` exercises the copied official scorer. If it fails, read `agent/eval/scorers/infiagent/eval_closed_form.py` and verify the expected response/label shape matches the test fixture.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add tests/test_eval.py
-git commit -m "test(eval): cover scorer and loader"
+git commit -m "test(eval): cover loader (join + subset + skip) and scorer integration"
 ```
 
 ## Task 17: First 80-task subset run
 
 **Files:**
-- Create: `agent/eval/results/subset-llama-retry.json` (output, gitignored — keep a copy for the README)
+- Create: `agent/eval/results/subset-llama-retry.json` (output, gitignored)
 
 - [ ] **Step 1: Run the 80-task subset with retry on**
 
 ```bash
 python -m agent.eval.run_dabench \
-  --tasks path/to/dabench/tasks.jsonl \
-  --data-dir path/to/dabench/data \
+  --questions "$TASKS_JSONL" \
+  --labels "$LABELS_JSONL" \
+  --data-dir "$DATA_DIR" \
   --subset 80 \
   --run-id subset-llama-retry
 ```
-Expected: completes in ~30–60 minutes (depending on Groq throughput); JSON file with 80 results.
+Expected: completes in ~30–60 minutes (rate-limited by Groq). Per-task progress prints; the final ABQ metric is printed at the end. The result JSON also has every task's full predicted response and common_answers, so you can re-score later without re-running.
 
-- [ ] **Step 2: Compute the accuracy**
+- [ ] **Step 2: Re-score later by file**
 
 ```bash
-python -c "
-import json
-data = json.load(open('agent/eval/results/subset-llama-retry.json'))
-results = data['results']
-correct = sum(1 for r in results if r.get('correct'))
-print(f'{correct}/{len(results)} = {correct/len(results):.1%}')
-"
+python -m agent.eval.run_dabench --score-only \
+  --questions "$TASKS_JSONL" --labels "$LABELS_JSONL" --data-dir "$DATA_DIR" \
+  --run-id subset-llama-retry
 ```
-Record this number — it's the first MVP-gate milestone metric.
+Useful for debugging the scorer or iterating on aggregation.
 
-- [ ] **Step 3: No commit (results are gitignored)** — but copy the accuracy and a few example traces into a scratch note for the eventual README.
+- [ ] **Step 3: No commit (results are gitignored)** — but record the headline ABQ number, a few example successes, and a few example failures into a scratch note for the README.
 
 ---
 
@@ -1662,13 +1814,14 @@ to complete the resume claim.
 
 ```bash
 python -m agent.eval.run_dabench \
-  --tasks ... --data-dir ... --subset 80 --no-retry \
+  --questions "$TASKS_JSONL" --labels "$LABELS_JSONL" --data-dir "$DATA_DIR" \
+  --subset 80 --no-retry \
   --run-id subset-llama-noretry
 ```
 
-- [ ] **Step 2: Compute accuracy and compare with Task 17 result**
+- [ ] **Step 2: Compare ABQ with Task 17**
 
-Record the delta (e.g., "Retry on: 42%; retry off: 31%; delta +11pp").
+Record the delta (e.g., "Retry on: 42% ABQ; retry off: 31% ABQ; delta +11pp").
 
 ## Task 19: Add Gemini provider for two-model comparison
 
@@ -1838,11 +1991,12 @@ git commit -m "feat(llm): Gemini provider with correct system+merge handling"
 - [ ] **Step 1: Run**
 
 ```bash
-python -m agent.eval.run_dabench --tasks ... --data-dir ... \
+python -m agent.eval.run_dabench \
+  --questions "$TASKS_JSONL" --labels "$LABELS_JSONL" --data-dir "$DATA_DIR" \
   --subset 80 --provider gemini --run-id subset-gemini-retry
 ```
 
-- [ ] **Step 2: Record the number for the comparison table.**
+- [ ] **Step 2: Record the ABQ for the comparison table.**
 
 ## Task 21: Full 257-task run on the best configuration
 
@@ -1851,7 +2005,8 @@ python -m agent.eval.run_dabench --tasks ... --data-dir ... \
 - [ ] **Step 2: Run the full benchmark**
 
 ```bash
-python -m agent.eval.run_dabench --tasks ... --data-dir ... \
+python -m agent.eval.run_dabench \
+  --questions "$TASKS_JSONL" --labels "$LABELS_JSONL" --data-dir "$DATA_DIR" \
   --run-id full-best
 ```
 Note: this may take several hours and may exhaust the free tier — the resume support is built in, so re-run the same command after a wait if it stops mid-way.
