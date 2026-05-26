@@ -106,6 +106,14 @@ Non-negotiable for a portfolio that signals technical seriousness:
 - No JS on routes that don't need it (Astro defaults handle this).
 - Font subsetting; no FOUT/FOIT.
 
+### SEO scaffolding (required to hit Lighthouse ≥ 95 SEO)
+
+- `<title>` and `<meta name="description">` per page (set via the layout's frontmatter).
+- Open Graph + Twitter card meta tags per page; a default 1200×630 OG image for pages that don't supply their own.
+- `sitemap.xml` (Astro's `@astrojs/sitemap` integration).
+- `robots.txt` allowing all crawlers.
+- Canonical link tags.
+
 ## 10. Repository layout
 
 ```
@@ -166,18 +174,36 @@ README.md
 
 The portfolio is "done" when:
 
-- All five project case-study pages exist with the full template filled in.
+- All five project case-study pages exist with the full template filled in (including a diagram for each — see note on legacy SVGs below).
 - The two launch blog posts are published.
 - Lighthouse scores ≥ 95 across all four categories on the landing and a representative project page.
 - The site is deployed and publicly accessible.
 - The résumé PDF download works.
 - The Data Analysis Agent project page links to the live demo and the GitHub repo.
+- The pre-launch checklist below has been walked through end-to-end.
+
+### Pre-launch checklist
+
+- [ ] All internal links resolve (no 404s) — run `astro check` or a link-checker.
+- [ ] All external links open in a new tab where appropriate (GitHub, LinkedIn, demo).
+- [ ] A custom **404 page** exists.
+- [ ] Social preview (OG image) renders correctly when the URL is pasted into LinkedIn, Twitter, and a chat app — test all three.
+- [ ] Favicon shows up in the browser tab.
+- [ ] Résumé PDF is the latest version and opens in-browser.
+- [ ] Analytics decision documented in the README (currently: none in v1).
+- [ ] Mobile layout reviewed on a real phone, not just devtools emulation.
+
+### Note on legacy-project diagrams
+
+The four legacy projects (RAG, ReAct agent, churn, movie recommender) each need an architecture SVG to fit the case-study template. These are real implementation work (~30–60 min per diagram with a tool like Excalidraw or Figma). If time-constrained, an acceptable v1 shortcut is to **defer diagrams for legacy projects** and use a "Project at a glance" bullet list in their place — the DA Agent page must still have its full diagram. This shortcut is acceptable for the legacy projects because the headline-attention is on the featured project, not the cards.
 
 ## 14. Dependency on the Data Analysis Agent project
 
-The portfolio's headline section is the Data Analysis Agent. The site can technically launch without the DA Agent (using a "coming soon" card for the featured slot), but the recommended sequence is:
+The portfolio's headline section is the Data Analysis Agent. The portfolio **must not launch publicly with a "coming soon" placeholder in the featured slot** — it directly contradicts the case-study template in §5 (which requires a Headline Number) and undercuts the recruiter funnel.
 
-1. Ship the DA Agent (or at least an MVP with a benchmark number).
-2. Then launch the portfolio with the DA Agent as the centerpiece.
+Mandatory sequencing:
 
-Implementation planning should respect this ordering.
+1. Ship the Data Analysis Agent to its MVP gate (see the DA Agent spec §13: working CLI, 80-task benchmark number, working Streamlit demo).
+2. Then, and only then, launch the portfolio with the DA Agent as the featured project.
+
+If the portfolio implementation runs ahead of the agent, the site is built but kept on a preview-only deploy (not promoted to the production URL) until the agent's MVP gate is met.
