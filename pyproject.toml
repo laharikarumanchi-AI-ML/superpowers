@@ -1,0 +1,35 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "Code-as-action data analysis agent."
+requires-python = ">=3.11"
+dependencies = [
+    "jupyter_client>=8.6.0",
+    "ipykernel>=6.29.0",
+    "requests>=2.31.0",
+    "pandas>=2.2.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.optional-dependencies]
+demo = ["streamlit>=1.31.0"]
+dev = ["pytest>=8.0.0", "pytest-mock>=3.12.0"]
+
+[project.scripts]
+agent = "agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent*"]
+
+[tool.setuptools.package-data]
+"*" = ["prompts/*.txt"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+log_cli = false
+testpaths = ["tests"]

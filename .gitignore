@@ -14,6 +14,8 @@ __pycache__/
 venv/
 .env
 .env.local
+*.egg-info/
+.pytest_cache/
 
 # Node / Astro (for the portfolio, when we add it)
 node_modules/
