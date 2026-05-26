@@ -1,0 +1,24 @@
+# Personal documents — not committed
+*.docx
+*.pdf
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Python (for the agent project, when we add it)
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.local
+
+# Node / Astro (for the portfolio, when we add it)
+node_modules/
+dist/
+.astro/
+
+# Eval results
+agent/eval/results/
