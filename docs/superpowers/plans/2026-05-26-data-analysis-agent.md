@@ -66,6 +66,96 @@ README.md                 # how to install, run CLI, run eval, run demo, results
 
 ---
 
+# Phase 0 — DABench Data Acquisition (do this BEFORE writing code)
+
+DABench is the most likely place for an executor to get stuck. Resolve it first, in the open, before any code that references it.
+
+## Task 0a: Clone the InfiAgent repo and locate DABench files
+
+**Files:** none in this repo; populate `external/InfiAgent/` (gitignored).
+
+- [ ] **Step 1: Clone InfiAgent**
+
+```bash
+mkdir -p external
+git clone --depth 1 https://github.com/InfiAgent/InfiAgent.git external/InfiAgent
+```
+
+- [ ] **Step 2: Find the DABench task file and data directory**
+
+```bash
+find external/InfiAgent -name "*.jsonl" | head -20
+find external/InfiAgent -name "*.csv" | head -10
+```
+
+Expected: at least one tasks `.jsonl` (likely `examples/DA-Agent/data/da-dev-questions.jsonl` or similar) and a directory of CSV tables. The exact paths may have changed since this plan was written — find them empirically.
+
+- [ ] **Step 3: Record the absolute paths in a scratch file**
+
+Create `external/PATHS.md` (gitignored) recording:
+- `TASKS_JSONL=<absolute path to questions.jsonl>`
+- `DATA_DIR=<absolute path to the CSV tables dir>`
+
+The remaining tasks reference these as `$TASKS_JSONL` and `$DATA_DIR` — keep them in your shell environment for the rest of the plan.
+
+- [ ] **Step 4: Add `external/` to `.gitignore`**
+
+The root `.gitignore` already excludes many things; ensure `external/` is in it:
+
+```bash
+grep -q '^external/' .gitignore || echo 'external/' >> .gitignore
+git add .gitignore && git commit -m "chore: gitignore external/ (DABench data lives here)"
+```
+
+## Task 0b: Verify the task schema
+
+The plan's code assumes specific field names (`id`, `question`, `data_file`, `expected_answer`). The real schema may differ — verify before writing the loader.
+
+- [ ] **Step 1: Inspect one task**
+
+```bash
+head -1 "$TASKS_JSONL" | python -m json.tool
+```
+
+- [ ] **Step 2: Confirm or adjust field names**
+
+Note the actual field names for: the unique task id, the question text, the dataset file reference, and the expected answer / answer format. If they differ from `id` / `question` / `data_file` / `expected_answer`, update Task 16's loader code accordingly.
+
+- [ ] **Step 3: Verify the answer format**
+
+DABench questions have **format constraints** (e.g., "answer with a single float to 2 decimal places"). The expected answer is structured. Skim 10 tasks to understand the format constraint vocabulary.
+
+## Task 0c: Locate or write the official scorer
+
+This is critical for the resume claim. A substring-match scorer (what Task 16 ships as a placeholder) does **not** match the published leaderboard.
+
+- [ ] **Step 1: Search for the scoring code in the InfiAgent repo**
+
+```bash
+grep -ril "def.*eval\|def.*score" external/InfiAgent | head
+```
+
+- [ ] **Step 2: Note the official scorer's signature and import path**
+
+Most likely something under `infiagent/eval/`. Record:
+- Module path (e.g., `infiagent.eval.metrics`).
+- Function signature.
+- How it interprets the per-task format constraint.
+
+- [ ] **Step 3: Decide one of two paths**
+
+**Path A (preferred — honest):** plan to call the official scorer from `agent/eval/run_dabench.py` in Task 16, so the reported number is leaderboard-comparable. May require `pip install -e external/InfiAgent` or copying the scorer module.
+
+**Path B (acceptable fallback):** keep the substring scorer but **rename** the metric throughout the README and case study from "DABench accuracy" to "approximate accuracy (substring match on DABench)" — never claim a leaderboard number. This is honest and easier; the resume sentence in spec §3 still works because it says "evaluated on InfiAgent-DABench" without claiming a leaderboard comparison.
+
+Record which path you took. The README in Task 22 must match the path chosen.
+
+- [ ] **Step 4: Commit the path decision**
+
+Add a one-line note to `docs/superpowers/specs/2026-05-26-data-analysis-agent-design.md` at the bottom of §8 ("Selected scorer path: A" or "B") and commit.
+
+---
+
 # Phase 1 — Project Scaffolding
 
 ## Task 1: Initialize Python project structure
@@ -108,6 +198,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agent*"]
+
+[tool.setuptools.package-data]
+"*" = ["prompts/*.txt"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+log_cli = false
 ```
 
 - [ ] **Step 2: Write `.python-version`**
@@ -214,13 +311,18 @@ Expected: FAIL with `NotImplementedError`.
 
 Replace the stub `Sandbox` with:
 ```python
+import base64
 import queue
+import time
 from jupyter_client.manager import start_new_kernel
 
 class Sandbox:
     def __init__(self, timeout_seconds: int = 30) -> None:
         self._timeout = timeout_seconds
         self._km, self._kc = start_new_kernel(kernel_name="python3")
+        # Required: without this, the first execute() can race the
+        # kernel's initial "status: busy" message and produce flaky output.
+        self._kc.wait_for_ready(timeout=30)
 
     def execute(self, code: str) -> ExecutionResult:
         msg_id = self._kc.execute(code)
@@ -230,34 +332,37 @@ class Sandbox:
         figures: list[bytes] = []
         timed_out = False
 
-        try:
-            while True:
-                try:
-                    msg = self._kc.get_iopub_msg(timeout=self._timeout)
-                except queue.Empty:
-                    timed_out = True
-                    self._km.interrupt_kernel()
-                    break
-                if msg.get("parent_header", {}).get("msg_id") != msg_id:
-                    continue
-                msg_type = msg["msg_type"]
-                content = msg["content"]
-                if msg_type == "stream":
-                    if content["name"] == "stdout":
-                        stdout_parts.append(content["text"])
-                    else:
-                        stderr_parts.append(content["text"])
-                elif msg_type == "error":
-                    exception_text = "\n".join(content.get("traceback", []))
-                elif msg_type == "display_data" or msg_type == "execute_result":
-                    data = content.get("data", {})
-                    if "image/png" in data:
-                        import base64
-                        figures.append(base64.b64decode(data["image/png"]))
-                elif msg_type == "status" and content["execution_state"] == "idle":
-                    break
-        finally:
-            pass
+        # Single deadline — enforces total wall-clock per cell, not per message.
+        deadline = time.monotonic() + self._timeout
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                self._km.interrupt_kernel()
+                self._drain_until_idle(msg_id)
+                break
+            try:
+                msg = self._kc.get_iopub_msg(timeout=min(remaining, 1.0))
+            except queue.Empty:
+                continue
+            if msg.get("parent_header", {}).get("msg_id") != msg_id:
+                continue
+            msg_type = msg["msg_type"]
+            content = msg["content"]
+            if msg_type == "stream":
+                if content["name"] == "stdout":
+                    stdout_parts.append(content["text"])
+                else:
+                    stderr_parts.append(content["text"])
+            elif msg_type == "error":
+                exception_text = "\n".join(content.get("traceback", []))
+            elif msg_type in ("display_data", "execute_result"):
+                data = content.get("data", {})
+                if "image/png" in data:
+                    figures.append(base64.b64decode(data["image/png"]))
+            elif msg_type == "status" and content["execution_state"] == "idle":
+                break
 
         return ExecutionResult(
             stdout="".join(stdout_parts),
@@ -266,6 +371,19 @@ class Sandbox:
             figures=figures,
             timed_out=timed_out,
         )
+
+    def _drain_until_idle(self, msg_id: str, hard_deadline: float = 5.0) -> None:
+        """After interrupt, drain remaining messages so the next execute() doesn't see them."""
+        end = time.monotonic() + hard_deadline
+        while time.monotonic() < end:
+            try:
+                msg = self._kc.get_iopub_msg(timeout=0.5)
+            except queue.Empty:
+                continue
+            if msg.get("parent_header", {}).get("msg_id") != msg_id:
+                continue
+            if msg["msg_type"] == "status" and msg["content"]["execution_state"] == "idle":
+                return
 
     def close(self) -> None:
         try:
@@ -875,11 +993,17 @@ def _format_observation(result: ExecutionResult) -> str:
 
 
 def run(question: str, dataset_path: str, llm, *,
-        retry_on_failure: bool = True) -> AgentResult:
-    """Run the agent loop against a dataset until <answer> or max steps."""
+        retry_on_failure: bool = True,
+        llm_kwargs: dict | None = None) -> AgentResult:
+    """Run the agent loop against a dataset until <answer> or max steps.
+
+    llm_kwargs is passed through to llm.chat() — eval runs should pass
+    {"temperature": 0} for reproducibility.
+    """
     session_id = str(uuid.uuid4())[:8]
     trace = Trace(session_id=session_id)
     sandbox = Sandbox()
+    call_kwargs = llm_kwargs or {}
 
     system_prompt = PROMPT_PATH.read_text().format(
         dataset_path=dataset_path,
@@ -893,7 +1017,7 @@ def run(question: str, dataset_path: str, llm, *,
     retries_used = 0
     try:
         for step in range(MAX_STEPS):
-            response = llm.chat(messages)
+            response = llm.chat(messages, **call_kwargs)
             parsed = parse_llm_response(response)
 
             if parsed.answer is not None:
@@ -927,12 +1051,14 @@ def run(question: str, dataset_path: str, llm, *,
                         False, None, trace, step + 1,
                         failure_reason="cell failed (retry disabled)",
                     )
-                retries_used += 1
-                if retries_used > MAX_RETRIES_PER_QUESTION:
+                # Check BEFORE incrementing so MAX_RETRIES_PER_QUESTION=3
+                # really means "at most 3 retries, then stop."
+                if retries_used >= MAX_RETRIES_PER_QUESTION:
                     return AgentResult(
                         False, None, trace, step + 1,
                         failure_reason="exceeded retry budget",
                     )
+                retries_used += 1
 
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content": observation})
@@ -958,6 +1084,66 @@ Expected: all tests PASS.
 ```bash
 git add agent/orchestrator.py tests/test_end_to_end.py
 git commit -m "feat(orchestrator): agent loop with sandbox execution and trace"
+```
+
+## Task 12b: Unit-test `_format_observation` and `_dataset_preview`
+
+These two helpers are on the hot path and silently swallow errors. Cover them.
+
+**Files:**
+- Modify: `tests/test_orchestrator.py`
+
+- [ ] **Step 1: Add tests**
+
+```python
+from agent.orchestrator import _format_observation, _dataset_preview
+from agent.sandbox import ExecutionResult
+
+
+def test_format_observation_includes_all_present_fields():
+    r = ExecutionResult(stdout="hi\n", stderr="warn\n",
+                        exception="Traceback...", figures=[b"\x89PNG..."],
+                        timed_out=False)
+    out = _format_observation(r)
+    assert "[stdout]" in out and "hi" in out
+    assert "[stderr]" in out and "warn" in out
+    assert "[exception]" in out
+    assert "1 figure" in out
+
+
+def test_format_observation_no_output_says_so():
+    out = _format_observation(ExecutionResult())
+    assert out == "[no output]"
+
+
+def test_format_observation_timeout_flag(tmp_path):
+    out = _format_observation(ExecutionResult(timed_out=True))
+    assert "[timeout" in out
+
+
+def test_dataset_preview_handles_missing_file(tmp_path):
+    out = _dataset_preview(str(tmp_path / "nope.csv"))
+    assert "could not preview" in out
+
+
+def test_dataset_preview_returns_shape_and_head(tmp_path):
+    import pandas as pd
+    p = tmp_path / "d.csv"
+    pd.DataFrame({"a": [1, 2, 3]}).to_csv(p, index=False)
+    out = _dataset_preview(str(p))
+    assert "(3, 1)" in out
+```
+
+- [ ] **Step 2: Run; verify PASS**
+
+Run: `pytest tests/test_orchestrator.py -v`
+Expected: all PASS.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_orchestrator.py
+git commit -m "test(orchestrator): cover format_observation and dataset_preview"
 ```
 
 ## Task 13: Test retry-off mode
@@ -1043,9 +1229,11 @@ def main(argv: list[str] | None = None) -> int:
 - [ ] **Step 2: Write `agent/__main__.py`**
 
 ```python
-from agent.cli import main
 import sys
-raise SystemExit(main(sys.argv[1:]))
+from agent.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
 ```
 
 - [ ] **Step 3: Smoke-test the CLI manually**
@@ -1053,7 +1241,12 @@ raise SystemExit(main(sys.argv[1:]))
 Run (requires real `GROQ_API_KEY`):
 ```bash
 export GROQ_API_KEY=...   # get one from https://console.groq.com/keys
-echo "x\n1\n2\n3\n4\n5" > /tmp/data.csv
+
+# Write a CSV with actual newlines (do not use `echo "...\n..."` — that
+# writes literal backslash-n characters on most shells).
+printf "x\n1\n2\n3\n4\n5\n" > /tmp/data.csv
+head /tmp/data.csv   # verify it really has six lines
+
 python -m agent ask --data /tmp/data.csv "What is the mean of x?"
 ```
 Expected: prints a number close to 3.0.
@@ -1155,6 +1348,68 @@ git add demo/
 git commit -m "feat(demo): Streamlit UI with pre-vetted datasets"
 ```
 
+## Task 15b: Deploy the demo (required by spec §13)
+
+Spec §13 says the demo must be publicly accessible. Hugging Face Spaces is the simplest host that supports Streamlit and free `GROQ_API_KEY` secrets.
+
+**Files:**
+- Create: `demo/requirements.txt` (HF Spaces uses this; not pyproject.toml)
+- Create: `demo/README.md` (HF Spaces config frontmatter goes here)
+
+- [ ] **Step 1: Create a Hugging Face account and a new Space**
+
+- Sign up at https://huggingface.co.
+- Create a new Space: SDK = Streamlit, hardware = CPU basic (free).
+- Note the Space's git URL.
+
+- [ ] **Step 2: Write `demo/requirements.txt`**
+
+```
+streamlit>=1.31.0
+jupyter_client>=8.6.0
+ipykernel>=6.29.0
+requests>=2.31.0
+pandas>=2.2.0
+matplotlib>=3.8.0
+# Install the agent package itself from the repo. HF Spaces clones the repo,
+# so a relative install works:
+-e .
+```
+
+- [ ] **Step 3: Write `demo/README.md` with HF Spaces frontmatter**
+
+```markdown
+---
+title: Data Analysis Agent
+emoji: 📊
+sdk: streamlit
+sdk_version: 1.31.0
+app_file: demo/app.py
+pinned: false
+---
+
+Code-as-action data-analysis agent. See main repo for details.
+```
+
+- [ ] **Step 4: Add the `GROQ_API_KEY` secret in HF Spaces**
+
+In the Space's Settings → Repository secrets, add `GROQ_API_KEY` with your key.
+
+- [ ] **Step 5: Push to the Space**
+
+```bash
+git remote add hf <space-git-url>
+git push hf main
+```
+Expected: HF Spaces builds and serves. URL is `https://huggingface.co/spaces/<user>/<space>`. Test the live demo end-to-end.
+
+- [ ] **Step 6: Commit the deploy config**
+
+```bash
+git add demo/requirements.txt demo/README.md
+git commit -m "feat(demo): Hugging Face Spaces deploy config"
+```
+
 ---
 
 # Phase 8 — Eval Harness (subset run for MVP gate)
@@ -1228,7 +1483,8 @@ def run_eval(tasks_jsonl: Path, data_dir: Path, results_path: Path,
         t0 = time.time()
         try:
             agent_result = run(task["question"], task["_data_path"], llm,
-                               retry_on_failure=retry)
+                               retry_on_failure=retry,
+                               llm_kwargs={"temperature": 0})
             results.append({
                 "task_id": task["id"],
                 "predicted": agent_result.answer,
@@ -1296,6 +1552,59 @@ git add agent/eval/run_dabench.py
 git commit -m "feat(eval): DABench runner with checkpoint/resume"
 ```
 
+## Task 16b: Unit-test the eval scorer and loader
+
+The scorer is the function that determines the resume number — it must be tested in isolation. The reviewer flagged this as the single biggest correctness risk.
+
+**Files:**
+- Create: `tests/test_eval.py`
+
+- [ ] **Step 1: Write tests**
+
+```python
+import json
+from pathlib import Path
+from agent.eval.run_dabench import score, load_tasks
+
+
+def test_score_substring_match():
+    assert score("the answer is 42", "42") is True
+    assert score("forty-two", "42") is False
+
+
+def test_score_none_safe():
+    assert score(None, "x") is False
+    assert score("x", None) is False
+
+
+def test_load_tasks_with_subset(tmp_path: Path):
+    tasks_file = tmp_path / "t.jsonl"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    tasks_file.write_text("\n".join([
+        json.dumps({"id": "t1", "question": "?", "data_file": "a.csv",
+                    "expected_answer": "1"}),
+        json.dumps({"id": "t2", "question": "?", "data_file": "b.csv",
+                    "expected_answer": "2"}),
+        json.dumps({"id": "t3", "question": "?", "data_file": "c.csv",
+                    "expected_answer": "3"}),
+    ]))
+    tasks = load_tasks(tasks_file, data_dir, subset=2)
+    assert len(tasks) == 2
+    assert tasks[0]["_data_path"].endswith("a.csv")
+```
+
+- [ ] **Step 2: Run; verify PASS** (and FAIL for the substring case if you've already swapped in the official scorer — that is expected; adjust the test to match whichever scorer you adopted in Phase 0c).
+
+Run: `pytest tests/test_eval.py -v`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/test_eval.py
+git commit -m "test(eval): cover scorer and loader"
+```
+
 ## Task 17: First 80-task subset run
 
 **Files:**
@@ -1332,9 +1641,10 @@ Record this number — it's the first MVP-gate milestone metric.
 # 🎯 MVP GATE REACHED
 
 After Task 17 you have:
-- A working CLI on real questions.
-- A working Streamlit demo with vetted datasets.
-- A real benchmark number on 80 DABench tasks.
+- A working CLI on real questions (Task 14).
+- A **deployed, publicly accessible** Streamlit demo with vetted datasets (Tasks 15 + 15b).
+- A real (or "leading-indicator", per the Phase 0c scorer decision) benchmark number on 80 DABench tasks (Task 17).
+- A scorer whose behavior is unit-tested (Task 16b).
 
 **The portfolio site is now unblocked.** A separate plan
 (`docs/superpowers/plans/2026-05-26-portfolio-website.md`, to be written next)
@@ -1363,8 +1673,65 @@ Record the delta (e.g., "Retry on: 42%; retry off: 31%; delta +11pp").
 
 **Files:**
 - Modify: `agent/llm_client.py`
+- Modify: `tests/test_llm_client.py`
+- Modify: `agent/eval/run_dabench.py`
 
-- [ ] **Step 1: Add `GeminiClient` class**
+Gemini's chat API differs from Groq's in two consequential ways:
+1. There is no `system` role in `contents` — system instructions go in a separate top-level `system_instruction` field.
+2. `contents` may not contain **consecutive same-role messages**; the API rejects them with 400.
+
+The implementation must handle both.
+
+- [ ] **Step 1: Write the failing tests first**
+
+`tests/test_llm_client.py`:
+```python
+from agent.llm_client import GeminiClient
+
+def test_gemini_lifts_system_message_into_system_instruction():
+    with patch("agent.llm_client.requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
+        }
+        client = GeminiClient(api_key="k", model="gemini-2.0-flash")
+        out = client.chat([
+            {"role": "system", "content": "you are an agent"},
+            {"role": "user", "content": "hi"},
+        ])
+    assert out == "ok"
+    sent = mock_post.call_args.kwargs["json"]
+    assert sent["system_instruction"]["parts"][0]["text"] == "you are an agent"
+    # No system role in `contents`
+    assert all(c["role"] in ("user", "model") for c in sent["contents"])
+    # No consecutive same-role messages
+    roles = [c["role"] for c in sent["contents"]]
+    assert all(a != b for a, b in zip(roles, roles[1:]))
+
+
+def test_gemini_merges_consecutive_user_messages():
+    with patch("agent.llm_client.requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
+        }
+        client = GeminiClient(api_key="k", model="gemini-2.0-flash")
+        client.chat([
+            {"role": "user", "content": "Q1"},
+            {"role": "user", "content": "Q2"},  # observation message
+        ])
+    sent = mock_post.call_args.kwargs["json"]
+    assert len(sent["contents"]) == 1
+    assert "Q1" in sent["contents"][0]["parts"][0]["text"]
+    assert "Q2" in sent["contents"][0]["parts"][0]["text"]
+```
+
+- [ ] **Step 2: Run the tests; verify FAIL**
+
+Run: `pytest tests/test_llm_client.py::test_gemini_lifts_system_message_into_system_instruction -v`
+Expected: FAIL (class doesn't exist yet).
+
+- [ ] **Step 3: Add `GeminiClient` to `agent/llm_client.py`**
 
 ```python
 class GeminiClient:
@@ -1376,58 +1743,89 @@ class GeminiClient:
         self._api_key = api_key
         self._model = model
 
-    def chat(self, messages: list[dict], **kwargs) -> str:
-        # Convert OpenAI-style messages to Gemini's contents format
-        contents = []
+    @staticmethod
+    def _to_gemini_format(messages: list[dict]) -> dict:
+        """Returns {'system_instruction': ..., 'contents': [...]} with merged
+        consecutive same-role turns; assistant messages map to 'model'."""
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        body = []
         for m in messages:
-            role = "user" if m["role"] in ("user", "system") else "model"
-            contents.append({"role": role, "parts": [{"text": m["content"]}]})
+            if m["role"] == "system":
+                continue
+            role = "user" if m["role"] == "user" else "model"
+            if body and body[-1]["role"] == role:
+                body[-1]["parts"][0]["text"] += "\n\n" + m["content"]
+            else:
+                body.append({"role": role, "parts": [{"text": m["content"]}]})
+        out: dict = {"contents": body}
+        if system_parts:
+            out["system_instruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
+        return out
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        payload = self._to_gemini_format(messages)
+        # Pass through optional generation config (temperature, max_tokens)
+        if "temperature" in kwargs or "max_tokens" in kwargs:
+            gen_cfg = {}
+            if "temperature" in kwargs:
+                gen_cfg["temperature"] = kwargs["temperature"]
+            if "max_tokens" in kwargs:
+                gen_cfg["maxOutputTokens"] = kwargs["max_tokens"]
+            payload["generationConfig"] = gen_cfg
 
         url = self.URL.format(model=self._model)
+        last_exc: Exception | None = None
         for attempt in range(self.MAX_ATTEMPTS):
-            resp = requests.post(
-                url, params={"key": self._api_key},
-                json={"contents": contents}, timeout=60,
-            )
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < self.MAX_ATTEMPTS - 1:
-                time.sleep(self.BACKOFF_BASE_SECONDS * (2 ** attempt))
-                continue
-            resp.raise_for_status()
-            return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-        raise RuntimeError("gemini exhausted retries")
+            try:
+                resp = requests.post(
+                    url, params={"key": self._api_key},
+                    json=payload, timeout=60,
+                )
+                resp.raise_for_status()
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            except requests.HTTPError as exc:
+                last_exc = exc
+                status = getattr(exc.response, "status_code", None)
+                if status in (429, 500, 502, 503, 504) and attempt < self.MAX_ATTEMPTS - 1:
+                    time.sleep(self.BACKOFF_BASE_SECONDS * (2 ** attempt))
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
 ```
 
-- [ ] **Step 2: Add a `--provider` flag to the eval runner** so `--provider gemini` switches clients.
+- [ ] **Step 4: Add `--provider` flag to `agent/eval/run_dabench.py`**
 
-- [ ] **Step 3: Add a quick test for the message-shape conversion**
-
-`tests/test_llm_client.py`:
+In `main()` add:
 ```python
-from agent.llm_client import GeminiClient
-
-def test_gemini_converts_messages():
-    with patch("agent.llm_client.requests.post") as mock_post:
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = {
-            "candidates": [{"content": {"parts": [{"text": "ok"}]}}]
-        }
-        client = GeminiClient(api_key="k", model="gemini-2.0-flash")
-        out = client.chat([
-            {"role": "system", "content": "be helpful"},
-            {"role": "user", "content": "hi"},
-        ])
-    assert out == "ok"
-    sent = mock_post.call_args.kwargs["json"]
-    assert sent["contents"][0]["role"] == "user"   # system mapped to user
-    assert sent["contents"][1]["role"] == "user"
+parser.add_argument("--provider", choices=["groq", "gemini"], default="groq")
 ```
 
-- [ ] **Step 4: Run tests + commit**
+In `run_eval()` accept a `provider` argument and switch clients:
+```python
+def _make_client(provider: str, model: str | None):
+    if provider == "groq":
+        return GroqClient(api_key=os.environ["GROQ_API_KEY"],
+                          model=model or "llama-3.3-70b-versatile")
+    if provider == "gemini":
+        from agent.llm_client import GeminiClient
+        return GeminiClient(api_key=os.environ["GEMINI_API_KEY"],
+                            model=model or "gemini-2.0-flash")
+    raise ValueError(f"unknown provider: {provider}")
+```
+
+Replace the hardcoded `llm = GroqClient(...)` line in `run_eval` with `llm = _make_client(provider, model)`.
+
+- [ ] **Step 5: Run tests; verify PASS**
+
+Run: `pytest tests/test_llm_client.py -v`
+Expected: all PASS.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-pytest -v
 git add agent/llm_client.py tests/test_llm_client.py agent/eval/run_dabench.py
-git commit -m "feat: Gemini client + --provider flag for ablation"
+git commit -m "feat(llm): Gemini provider with correct system+merge handling"
 ```
 
 ## Task 20: Gemini run on the subset
@@ -1453,7 +1851,17 @@ python -m agent.eval.run_dabench --tasks ... --data-dir ... \
 ```
 Note: this may take several hours and may exhaust the free tier — the resume support is built in, so re-run the same command after a wait if it stops mid-way.
 
-- [ ] **Step 3: Record the headline number.**
+- [ ] **Step 3: If the free tier blocks completion**, implement spec §8's `--allow-provider-fallback`:
+
+This was deferred from the initial implementation. If you actually hit the rate-limit wall, add to `run_dabench.py`:
+- A `--allow-provider-fallback` flag.
+- When set, on a hard 429 after backoff exhaustion, swap the LLM client to the alternate provider for the remainder of the run.
+- Record the provider per task in the result JSON (add a `"provider": "groq"|"gemini"` field to each task's result).
+- The README's headline number must footnote any per-provider split.
+
+If the free tier handles it without the swap, skip this step — but record in the README that the entire run was on a single provider.
+
+- [ ] **Step 4: Record the headline number.**
 
 ---
 
