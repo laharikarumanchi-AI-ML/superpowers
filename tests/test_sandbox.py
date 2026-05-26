@@ -51,3 +51,13 @@ plt.show()
         sb.close()
     assert len(result.figures) >= 1
     assert result.figures[0].startswith(bytes([0x89]) + b"PNG")
+
+
+def test_state_persists_across_executions():
+    sb = Sandbox()
+    try:
+        sb.execute("x = 42")
+        result = sb.execute("print(x)")
+    finally:
+        sb.close()
+    assert "42" in result.stdout
