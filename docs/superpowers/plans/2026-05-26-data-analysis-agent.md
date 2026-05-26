@@ -98,13 +98,14 @@ Create `external/PATHS.md` (gitignored) recording:
 
 The remaining tasks reference these as `$TASKS_JSONL` and `$DATA_DIR` — keep them in your shell environment for the rest of the plan.
 
-- [ ] **Step 4: Add `external/` to `.gitignore`**
+- [ ] **Step 4: Add `external/` and `agent/eval/results/` to `.gitignore`**
 
-The root `.gitignore` already excludes many things; ensure `external/` is in it:
+The root `.gitignore` already excludes many things; ensure both are in it:
 
 ```bash
 grep -q '^external/' .gitignore || echo 'external/' >> .gitignore
-git add .gitignore && git commit -m "chore: gitignore external/ (DABench data lives here)"
+grep -q '^agent/eval/results/' .gitignore || echo 'agent/eval/results/' >> .gitignore
+git add .gitignore && git commit -m "chore: gitignore external/ and eval results"
 ```
 
 ## Task 0b: Verify the task schema
@@ -1814,7 +1815,11 @@ def _make_client(provider: str, model: str | None):
     raise ValueError(f"unknown provider: {provider}")
 ```
 
-Replace the hardcoded `llm = GroqClient(...)` line in `run_eval` with `llm = _make_client(provider, model)`.
+**Update three places** so the new argument actually flows through:
+
+1. Change `run_eval`'s signature to accept `provider: str = "groq"`.
+2. Inside `run_eval`, replace the hardcoded `llm = GroqClient(...)` with `llm = _make_client(provider, model)`. Remove the now-unused `api_key = os.environ["GROQ_API_KEY"]` line above it.
+3. In `main()`, pass `provider=args.provider` to the `run_eval(...)` call.
 
 - [ ] **Step 5: Run tests; verify PASS**
 
