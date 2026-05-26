@@ -140,6 +140,8 @@ All eval runs write to `eval/results/<run-id>.json` so they can be reproduced an
 
 Both Groq and Gemini free tiers have daily request caps. If a single full-DABench run hits the cap mid-way, the eval harness must (a) checkpoint after every task to `results/<run-id>.json`, (b) be resumable from the last completed task, and (c) automatically switch to the alternate provider only if the user passes `--allow-provider-fallback`. Provider switches mid-run must be recorded in the result file so the published number is honest about which tasks each model answered.
 
+Selected scorer path: A (specific integration: A2 — copy `eval_closed_form.py` + `utils/utils.py` from InfiAgent into `agent/eval/scorers/infiagent/` with attribution; stdlib-only, no extra deps).
+
 ## 9. Testing
 
 | Test | Purpose |
