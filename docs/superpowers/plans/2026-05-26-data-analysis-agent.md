@@ -894,7 +894,7 @@ Each response must contain EXACTLY ONE of:
 
 Execution rules:
 - Code blocks run in a persistent Jupyter kernel; variables persist across blocks.
-- pandas, numpy, and matplotlib are available. matplotlib uses the 'Agg' backend.
+- pandas, numpy, and matplotlib are available. Matplotlib figures are captured automatically when you call `plt.show()` — do NOT call `matplotlib.use(...)` (that suppresses the capture).
 - Keep code blocks small and focused — one logical step per block.
 - If a code block raises, you will see the traceback; fix and retry.
 - The dataset is already at {dataset_path}; do not re-download or relocate it.
