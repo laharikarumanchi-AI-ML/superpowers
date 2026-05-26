@@ -22,3 +22,13 @@ def test_captures_exception_traceback():
         sb.close()
     assert result.exception is not None
     assert "ZeroDivisionError" in result.exception
+
+
+def test_long_running_code_times_out():
+    sb = Sandbox(timeout_seconds=2)
+    try:
+        result = sb.execute("import time; time.sleep(10); print('done')")
+    finally:
+        sb.close()
+    assert result.timed_out is True
+    assert "done" not in result.stdout
