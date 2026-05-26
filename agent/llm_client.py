@@ -9,8 +9,9 @@ class LLMClient(Protocol):
 
 class GroqClient:
     URL = "https://api.groq.com/openai/v1/chat/completions"
-    MAX_ATTEMPTS = 3
-    BACKOFF_BASE_SECONDS = 1.0
+    MAX_ATTEMPTS = 5
+    BACKOFF_BASE_SECONDS = 2.0
+    MAX_BACKOFF_SECONDS = 60.0
 
     def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile") -> None:
         self._api_key = api_key
@@ -32,8 +33,19 @@ class GroqClient:
                 last_exc = exc
                 status = getattr(exc.response, "status_code", None)
                 if status in (429, 500, 502, 503, 504) and attempt < self.MAX_ATTEMPTS - 1:
-                    time.sleep(self.BACKOFF_BASE_SECONDS * (2 ** attempt))
+                    time.sleep(self._sleep_seconds(exc.response, attempt))
                     continue
                 raise
         assert last_exc is not None
         raise last_exc
+
+    def _sleep_seconds(self, response, attempt: int) -> float:
+        """Respect server's Retry-After if present; otherwise exponential backoff."""
+        if response is not None:
+            ra = response.headers.get("Retry-After") if hasattr(response, "headers") else None
+            if ra:
+                try:
+                    return min(float(ra), self.MAX_BACKOFF_SECONDS)
+                except (TypeError, ValueError):
+                    pass
+        return min(self.BACKOFF_BASE_SECONDS * (2 ** attempt), self.MAX_BACKOFF_SECONDS)

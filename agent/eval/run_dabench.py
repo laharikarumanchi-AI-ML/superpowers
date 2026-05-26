@@ -59,7 +59,10 @@ def run_eval(questions_jsonl: Path, labels_jsonl: Path, data_dir: Path,
     results: list[dict] = []
     if results_path.exists():
         existing = json.loads(results_path.read_text())
-        results = existing["results"]
+        # On resume, drop any records that errored out (e.g., rate-limit
+        # exceptions caught below) so they get retried. Only records with
+        # a real predicted_response are considered "done."
+        results = [r for r in existing["results"] if "predicted_response" in r]
         done_ids = {r["task_id"] for r in results}
 
     for i, task in enumerate(tasks):
