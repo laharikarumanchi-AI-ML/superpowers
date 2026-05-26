@@ -28,3 +28,14 @@ def test_agent_answers_simple_question(tmp_path: Path):
     assert result.success
     assert "2.5" in result.answer
     assert len(result.trace.steps) == 2
+
+
+def test_retry_off_fails_immediately_on_exception(tmp_path: Path):
+    csv = tmp_path / "data.csv"
+    pd.DataFrame({"x": [1]}).to_csv(csv, index=False)
+    llm = ScriptedLLM([
+        "<code>raise ValueError('boom')</code>",
+    ])
+    result = run("Q?", str(csv), llm, retry_on_failure=False)
+    assert result.success is False
+    assert "retry disabled" in result.failure_reason
