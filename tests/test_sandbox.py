@@ -32,3 +32,22 @@ def test_long_running_code_times_out():
         sb.close()
     assert result.timed_out is True
     assert "done" not in result.stdout
+
+
+def test_captures_matplotlib_figure():
+    sb = Sandbox()
+    # Rely on the kernel's default inline backend
+    # (module://matplotlib_inline.backend_inline) which emits image/png
+    # via display_data on plt.show(). Forcing 'Agg' would suppress that.
+    code = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([1, 2, 3], [4, 5, 6])
+plt.show()
+"""
+    try:
+        result = sb.execute(code)
+    finally:
+        sb.close()
+    assert len(result.figures) >= 1
+    assert result.figures[0].startswith(bytes([0x89]) + b"PNG")
