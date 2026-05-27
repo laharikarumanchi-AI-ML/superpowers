@@ -44,8 +44,13 @@ def _make_client(provider: str, model: str | None):
                           model=model or "llama-3.3-70b-versatile")
     if provider == "gemini":
         from agent.llm_client import GeminiClient
-        return GeminiClient(api_key=os.environ["GEMINI_API_KEY"],
-                            model=model or "gemini-2.0-flash")
+        # gemini-2.0-flash free tier is 15 RPM; 4.5s between calls keeps us
+        # under that comfortably even with a small clock-skew margin.
+        return GeminiClient(
+            api_key=os.environ["GEMINI_API_KEY"],
+            model=model or "gemini-2.0-flash",
+            min_seconds_between_calls=4.5,
+        )
     raise ValueError(f"unknown provider: {provider}")
 
 

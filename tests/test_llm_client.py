@@ -149,11 +149,66 @@ def test_gemini_passes_temperature_through_generation_config():
 def test_gemini_respects_retry_after_header():
     bad = MagicMock(status_code=429)
     bad.headers = {"Retry-After": "5"}
+    bad.url = "https://generativelanguage.googleapis.com/foo?key=[REDACTED]"
     bad.raise_for_status.side_effect = requests.HTTPError(response=bad)
     good = MagicMock(status_code=200)
+    good.url = "https://generativelanguage.googleapis.com/foo?key=[REDACTED]"
     good.json.return_value = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
     with patch("agent.llm_client.requests.post", side_effect=[bad, good]):
         with patch("agent.llm_client.time.sleep") as mock_sleep:
             client = GeminiClient(api_key="k", model="gemini-2.0-flash")
             client.chat([{"role": "user", "content": "hi"}])
+    # 5s sleep from Retry-After; no throttle sleep (min_gap=0 by default)
     mock_sleep.assert_called_once_with(5.0)
+
+
+def test_gemini_scrubs_key_from_response_url_before_raising():
+    """Critical: Gemini puts the key in resp.url, which leaks to error
+    messages and serialized exceptions. Sanitize before raise_for_status."""
+    leaky = MagicMock(status_code=429)
+    leaky.url = "https://generativelanguage.googleapis.com/foo?key=SECRET_KEY_123"
+    leaky.headers = {}
+
+    def fake_raise():
+        raise requests.HTTPError(f"429 for url: {leaky.url}", response=leaky)
+    leaky.raise_for_status.side_effect = fake_raise
+
+    with patch("agent.llm_client.requests.post", return_value=leaky):
+        with patch("agent.llm_client.time.sleep"):
+            client = GeminiClient(api_key="SECRET_KEY_123", model="gemini-2.0-flash")
+            try:
+                client.chat([{"role": "user", "content": "hi"}])
+            except requests.HTTPError as exc:
+                # The URL on the response object must be sanitized; the
+                # exception message Build by raise_for_status uses resp.url
+                assert "SECRET_KEY_123" not in leaky.url
+                assert "[REDACTED]" in leaky.url
+
+
+def test_gemini_throttles_between_calls():
+    """When min_seconds_between_calls is set, second call waits."""
+    good = MagicMock(status_code=200)
+    good.url = "https://x/foo?key=[REDACTED]"
+    good.json.return_value = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+    fake_now = [100.0]
+    def fake_monotonic():
+        return fake_now[0]
+    sleep_calls: list[float] = []
+    def fake_sleep(s: float):
+        sleep_calls.append(s)
+        fake_now[0] += s
+
+    with patch("agent.llm_client.requests.post", return_value=good):
+        with patch("agent.llm_client.time.monotonic", side_effect=fake_monotonic):
+            with patch("agent.llm_client.time.sleep", side_effect=fake_sleep):
+                client = GeminiClient(api_key="k", model="m",
+                                      min_seconds_between_calls=4.5)
+                client.chat([{"role": "user", "content": "first"}])
+                # advance the fake clock by 1s — well under 4.5s gap
+                fake_now[0] += 1.0
+                client.chat([{"role": "user", "content": "second"}])
+
+    # First call shouldn't throttle (no prior call). Second should sleep ~3.5s.
+    assert len(sleep_calls) == 1
+    assert 3.0 < sleep_calls[0] <= 4.5

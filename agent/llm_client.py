@@ -52,16 +52,29 @@ class GroqClient:
 
 
 class GeminiClient:
-    """Google Gemini chat client. Free tier has much higher TPM than Groq's
-    free Llama tier, which matters for sequential agent runs."""
+    """Google Gemini chat client.
+
+    Free tier of gemini-2.0-flash is 15 RPM — much tighter than I assumed.
+    Use min_seconds_between_calls to throttle to the published rate.
+    """
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     MAX_ATTEMPTS = 5
     BACKOFF_BASE_SECONDS = 2.0
     MAX_BACKOFF_SECONDS = 60.0
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash",
+                 min_seconds_between_calls: float = 0.0) -> None:
         self._api_key = api_key
         self._model = model
+        self._min_gap = min_seconds_between_calls
+        self._last_call_monotonic: float = 0.0
+
+    def _throttle(self) -> None:
+        if self._min_gap <= 0:
+            return
+        elapsed = time.monotonic() - self._last_call_monotonic
+        if elapsed < self._min_gap:
+            time.sleep(self._min_gap - elapsed)
 
     @staticmethod
     def _to_gemini_format(messages: list[dict]) -> dict:
@@ -100,9 +113,16 @@ class GeminiClient:
         url = self.URL.format(model=self._model)
         last_exc: Exception | None = None
         for attempt in range(self.MAX_ATTEMPTS):
+            self._throttle()
             try:
                 resp = requests.post(url, params={"key": self._api_key},
                                      json=payload, timeout=60)
+                self._last_call_monotonic = time.monotonic()
+                # SCRUB: Gemini puts the API key in the URL query string.
+                # `raise_for_status()` builds its message from resp.url, which
+                # leaks the key to logs/exceptions/results files. Sanitize first.
+                if "?key=" in resp.url or "&key=" in resp.url:
+                    resp.url = resp.url.split("?")[0] + "?key=[REDACTED]"
                 resp.raise_for_status()
                 data = resp.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"]
