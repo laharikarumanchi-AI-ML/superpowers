@@ -142,13 +142,16 @@ git commit -m "chore: scaffold Astro portfolio with MDX + sitemap"
 
 ## Task 2: Content collection schemas
 
-**Files:** Create `src/content/config.ts`.
+> **Note on Astro v6** (current as of this writing): the legacy `src/content/config.ts` + `type: 'content'` pattern was removed. Schemas now live at `src/content.config.ts` and each collection takes a `loader: glob(...)` pointing at the MDX directory. The `getCollection()` API used by downstream pages is unchanged. Code below uses the v6 shape.
+
+**Files:** Create `src/content.config.ts` (NOT `src/content/config.ts`).
 
 ```typescript
 import { defineCollection, z } from 'astro:content';
+import { glob } from 'astro/loaders';
 
 const projects = defineCollection({
-  type: 'content',
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/projects' }),
   schema: z.object({
     title: z.string(),
     oneLiner: z.string(),           // appears on cards and at top of case study
@@ -163,7 +166,7 @@ const projects = defineCollection({
 });
 
 const blog = defineCollection({
-  type: 'content',
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/blog' }),
   schema: z.object({
     title: z.string(),
     description: z.string(),
