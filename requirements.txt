@@ -1,0 +1,13 @@
+# Requirements for Hugging Face Spaces deployment of the Streamlit demo.
+# HF reads this file at build time to install dependencies into the Space.
+# Local development uses pyproject.toml instead — see docs/HF_DEPLOY.md.
+
+streamlit>=1.31.0
+jupyter_client>=8.6.0
+ipykernel>=6.29.0
+requests>=2.31.0
+pandas>=2.2.0
+matplotlib>=3.8.0
+
+# Install the agent package itself so demo/app.py can `import agent.*`
+-e .

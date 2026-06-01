@@ -1,0 +1,37 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Portfolio (Astro dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "/Users/anilkumar/portfolio"],
+      "port": 4321
+    },
+    {
+      "name": "Data Analysis Agent (Streamlit demo)",
+      "runtimeExecutable": "/Users/anilkumar/Lahari/.venv/bin/streamlit",
+      "runtimeArgs": [
+        "run",
+        "/Users/anilkumar/Lahari/demo/app.py",
+        "--server.port",
+        "8501",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8501
+    },
+    {
+      "name": "Document Q&A RAG (Streamlit demo)",
+      "runtimeExecutable": "/Users/anilkumar/document-qa-rag/.venv/bin/streamlit",
+      "runtimeArgs": [
+        "run",
+        "/Users/anilkumar/document-qa-rag/demo/app.py",
+        "--server.port",
+        "8502",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8502
+    }
+  ]
+}
