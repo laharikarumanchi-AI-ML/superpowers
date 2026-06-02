@@ -9,5 +9,9 @@ requests>=2.31.0
 pandas>=2.2.0
 matplotlib>=3.8.0
 
-# Install the agent package itself so demo/app.py can `import agent.*`
--e .
+# Note: we deliberately do NOT install the agent package via pip here.
+# HF Spaces mounts requirements.txt at /tmp at install time, but the
+# repo source isn't available yet at that step — so any `-e .` or
+# `-e /app` reference fails ("no pyproject.toml found"). Instead,
+# demo/app.py adds the repo root to sys.path explicitly, which is
+# portable and works in both local and HF environments.

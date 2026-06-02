@@ -1,5 +1,13 @@
 import os
+import sys
 from pathlib import Path
+
+# Ensure the repo root is on sys.path so `from agent.*` works regardless
+# of where the script is invoked from. Necessary for HF Spaces (which
+# doesn't pip-install the package — see requirements.txt comment) and
+# harmless for local `streamlit run demo/app.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import streamlit as st
 from agent.orchestrator import run
 from agent.llm_client import GroqClient

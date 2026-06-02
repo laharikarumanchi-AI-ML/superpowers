@@ -14,6 +14,8 @@ __pycache__/
 venv/
 .env
 .env.local
+# Catch credential files like 1.password.env, prod.env, etc.
+*.env
 *.egg-info/
 .pytest_cache/
 
