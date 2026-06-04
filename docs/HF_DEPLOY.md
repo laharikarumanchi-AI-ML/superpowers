@@ -1,5 +1,17 @@
 # Deploying the Streamlit demo to Hugging Face Spaces
 
+> ⚠️ **The `deploy/hf` branch is a workflow branch, not a PR proposal.**
+> It exists to be pushed to the Hugging Face Spaces git remote
+> (`git push hf deploy/hf:main`), **not** merged into GitHub `main`.
+> A merge into `main` would replace the recruiter-facing README at
+> `github.com/laharikarumanchi-AI-ML/superpowers` with the Space's
+> YAML-frontmatter version. Universal improvements discovered while
+> working on this branch should land via a separate cherry-pick PR
+> (see PR #3 / `chore/hf-deploy-followups` for the template).
+>
+> If you ever invoke `/create-pr` from `deploy/hf`, you'll see a
+> diff that proposes only the README clobber. **Don't merge it.**
+
 The Streamlit demo (`demo/app.py`) runs the data-analysis agent against
 the vetted CSVs in `demo/datasets/`. This guide walks through publishing
 it as a public, free Hugging Face Space.
